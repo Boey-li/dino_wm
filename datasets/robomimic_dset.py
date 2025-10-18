@@ -11,12 +11,8 @@ from omegaconf import OmegaConf
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
-try:
-    from .traj_dset import TrajDataset, TrajSlicerDataset, TrajSubset
-    from .robomimic_utils import *
-except ImportError:
-    from traj_dset import TrajDataset, TrajSlicerDataset, TrajSubset
-    from robomimic_utils import *
+from .traj_dset import TrajDataset, TrajSlicerDataset, TrajSubset
+from .robomimic_utils import *
 
 
 class RoboMimicDataset(TrajDataset):
@@ -183,14 +179,23 @@ class RoboMimicDataset(TrajDataset):
         proprio = self.proprios[idx, frames]
         
         obs = {}
-        for key in self.pixel_keys:
-            img = self.obs_imgs_dict[key][idx, frames]          # (T, H, W, C)
-            img = rearrange(img, "T H W C -> T C H W") / 255.0  # (T, C, H, W)
-            if self.transform:
-                img = self.transform(img)
-            obs[key] = img
         obs["proprio"] = proprio
         
+        #TODO: support multiple pixel keys
+        # for key in self.pixel_keys:
+        #     img = self.obs_imgs_dict[key][idx, frames]          # (T, H, W, C)
+        #     img = rearrange(img, "T H W C -> T C H W") / 255.0  # (T, C, H, W)
+        #     if self.transform:
+        #         img = self.transform(img)
+        #     obs[key] = img
+        
+        # Now: take agent view only as visual input
+        img = self.obs_imgs_dict[self.pixel_keys[0]][idx, frames]   # (T, H, W, C)
+        img = rearrange(img, "T H W C -> T C H W") / 255.0          # (T, C, H, W)
+        if self.transform:
+            img = self.transform(img)
+        obs['visual'] = img
+
         return obs, act, state, {} # infos is None
 
     def __getitem__(self, idx):
@@ -243,10 +248,10 @@ def load_robomimic_slice_train_val(
     
     datasets = {}
     datasets["train"] = train_slices
-    datasets["valid"] = val_slices
+    datasets["valid"] = train_slices # overfit
     traj_dset = {}
     traj_dset["train"] = train_dset
-    traj_dset["valid"] = val_dset
+    traj_dset["valid"] = train_dset # overfit
     
     return datasets, traj_dset
     
@@ -283,7 +288,6 @@ def test_robomimic_dataset(cfg: OmegaConf):
     plt.close()    
     
     cprint("--------Finished Everything--------", "green", attrs=["bold"])
-
 
 
 if __name__ == "__main__":
