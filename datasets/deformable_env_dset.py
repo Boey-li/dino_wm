@@ -25,6 +25,7 @@ class DeformDataset(TrajDataset):
         self.data_path = Path(data_path) / object_name
         self.transform = transform
         self.normalize_action = normalize_action
+        
         self.states = torch.load(
             self.data_path / "states.pth"
         ).float()  # (n_rollout, n_timestep, n_particles, 4)

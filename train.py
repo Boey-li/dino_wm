@@ -81,35 +81,42 @@ class Trainer:
 
         self.accelerator.wait_for_everyone()
         if self.accelerator.is_main_process:
-            wandb_run_id = None
-            if os.path.exists("hydra.yaml"):
-                existing_cfg = OmegaConf.load("hydra.yaml")
-                wandb_run_id = existing_cfg["wandb_run_id"]
-                log.info(f"Resuming Wandb run {wandb_run_id}")
+            wandb_enabled = cfg.get('wandb_enabled', True)
+            
+            if wandb_enabled:
+                wandb_run_id = None
+                if os.path.exists("hydra.yaml"):
+                    existing_cfg = OmegaConf.load("hydra.yaml")
+                    wandb_run_id = existing_cfg["wandb_run_id"]
+                    log.info(f"Resuming Wandb run {wandb_run_id}")
 
-            wandb_dict = OmegaConf.to_container(cfg, resolve=True)
-            if self.cfg.debug:
-                log.info("WARNING: Running in debug mode...")
-                self.wandb_run = wandb.init(
-                    project="dino_wm_debug",
-                    config=wandb_dict,
-                    id=wandb_run_id,
-                    resume="allow",
-                )
+                wandb_dict = OmegaConf.to_container(cfg, resolve=True)
+                if self.cfg.debug:
+                    log.info("WARNING: Running in debug mode...")
+                    self.wandb_run = wandb.init(
+                        project="dino_wm_debug",
+                        config=wandb_dict,
+                        id=wandb_run_id,
+                        resume="allow",
+                    )
+                else:
+                    self.wandb_run = wandb.init(
+                        project="dino_wm",
+                        config=wandb_dict,
+                        id=wandb_run_id,
+                        resume="allow",
+                    )
+                OmegaConf.set_struct(cfg, False)
+                cfg.wandb_run_id = self.wandb_run.id
+                OmegaConf.set_struct(cfg, True)
+                wandb.run.name = "{}".format(model_name)
+                with open(os.path.join(os.getcwd(), "hydra.yaml"), "w") as f:
+                    f.write(OmegaConf.to_yaml(cfg, resolve=True))
             else:
-                self.wandb_run = wandb.init(
-                    project="dino_wm",
-                    config=wandb_dict,
-                    id=wandb_run_id,
-                    resume="allow",
-                )
-            OmegaConf.set_struct(cfg, False)
-            cfg.wandb_run_id = self.wandb_run.id
-            OmegaConf.set_struct(cfg, True)
-            wandb.run.name = "{}".format(model_name)
-            with open(os.path.join(os.getcwd(), "hydra.yaml"), "w") as f:
-                f.write(OmegaConf.to_yaml(cfg, resolve=True))
+                self.wandb_run = None
+                log.info("WandB disabled")
 
+        ### Load dataset
         seed(cfg.training.seed)
         log.info(f"Loading dataset from {self.cfg.env.dataset.data_path} ...")
         self.datasets, traj_dsets = hydra.utils.call(
@@ -233,10 +240,9 @@ class Trainer:
         )
         action_emb_dim = self.action_encoder.emb_dim
         print(f"Action encoder type: {type(self.action_encoder)}")
-
         self.action_encoder = self.accelerator.prepare(self.action_encoder)
 
-        if self.accelerator.is_main_process:
+        if self.accelerator.is_main_process and self.wandb_run is not None:
             self.wandb_run.watch(self.action_encoder)
             self.wandb_run.watch(self.proprio_encoder)
 
@@ -353,7 +359,8 @@ class Trainer:
                         f"{job_name}/{key}": value for key, value in result.items()
                     }
                     log_data["epoch"] = epoch
-                    self.wandb_run.log(log_data)
+                    if self.wandb_run is not None:
+                        self.wandb_run.log(log_data)
                     self.job_set.remove((epoch, job_name, job))
             time.sleep(1)
 
@@ -442,7 +449,8 @@ class Trainer:
     def train(self):
         for i, data in enumerate(
             tqdm(self.dataloaders["train"], desc=f"Epoch {self.epoch} Train")
-        ):
+        ):  
+            # [BS, BL, ...]
             obs, act, state = data
             plot = i == 0  # only plot from the first batch
             self.model.train()
@@ -740,7 +748,7 @@ class Trainer:
         log.info(f"Epoch {self.epoch}  Training loss: {epoch_log['train_loss']:.4f}  \
                 Validation loss: {epoch_log['val_loss']:.4f}")
 
-        if self.accelerator.is_main_process:
+        if self.accelerator.is_main_process and self.wandb_run is not None:
             self.wandb_run.log(epoch_log)
         self.epoch_log = OrderedDict()
 

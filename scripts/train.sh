@@ -1,0 +1,1 @@
+python train.py --config-name train.yaml env=pusht frameskip=5 num_hist=3

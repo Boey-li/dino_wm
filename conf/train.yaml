@@ -41,7 +41,8 @@ training:
   predictor_lr: 5e-4
   action_encoder_lr: 5e-4
 
-img_size: 224 # should be a multiple of 224
+# img_size: 224 # should be a multiple of 224
+img_size: 64
 frameskip: 5
 concat_dim: 1
 
@@ -70,6 +71,9 @@ model:
   train_decoder: True
 
 debug: False 
+
+# WandB logging configuration
+wandb_enabled: False  # Set to False to disable WandB logging
 
 # Planning params for planning eval jobs launched during training
 plan_settings: 

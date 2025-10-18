@@ -77,6 +77,7 @@ class PushTDataset(TrajDataset):
         self.state_dim = self.states.shape[-1]
         self.proprio_dim = self.proprios.shape[-1]
 
+        # Normalization 
         if normalize_action:
             self.action_mean = ACTION_MEAN
             self.action_std = ACTION_STD

@@ -1,0 +1,23 @@
+name: robomimic
+args: []
+kwargs: 
+  task_name: "square"
+
+dataset:
+  _target_: "robomimic_dset.load_robomimic_slice_train_val"
+  data_path: "/coc/flash7/bli678/projects/egowm/data/robomimic_datasets"
+  task_name: "square"
+  normalize_action: False
+  n_rollout: null
+  num_exp_trajs: 50       # Number of training episodes
+  num_exp_val_trajs: 5    # Number of validation episodes
+  done_mode: 1  # Done mode (0, 1, or 2)
+  shape_rewards: True
+  img_size: 64
+  max_traj_length: 250
+  transform:
+    _target_: "img_transforms.default_transform"
+    img_size: 64
+
+decoder_path: null
+num_workers: 16
