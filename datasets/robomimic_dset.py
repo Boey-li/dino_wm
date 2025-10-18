@@ -248,10 +248,10 @@ def load_robomimic_slice_train_val(
     
     datasets = {}
     datasets["train"] = train_slices
-    datasets["valid"] = train_slices # overfit
+    datasets["valid"] = val_slices
     traj_dset = {}
     traj_dset["train"] = train_dset
-    traj_dset["valid"] = train_dset # overfit
+    traj_dset["valid"] = val_dset
     
     return datasets, traj_dset
     

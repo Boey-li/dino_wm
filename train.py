@@ -34,7 +34,8 @@ class Trainer:
             log.info(f"Model saved dir: {cfg['saved_folder']}")
         cfg_dict = cfg_to_dict(cfg)
         model_name = cfg_dict["saved_folder"].split("outputs/")[-1]
-        model_name += f"_{self.cfg.env.name}_f{self.cfg.frameskip}_h{self.cfg.num_hist}_p{self.cfg.num_pred}"
+        # model_name += f"_{self.cfg.env.name}_f{self.cfg.frameskip}_h{self.cfg.num_hist}_p{self.cfg.num_pred}"
+        model_name += f"_{self.cfg.wandb_exp_name}_f{self.cfg.frameskip}_h{self.cfg.num_hist}_p{self.cfg.num_pred}"
 
         if HydraConfig.get().mode == RunMode.MULTIRUN:
             log.info(" Multirun setup begin...")
@@ -79,11 +80,12 @@ class Trainer:
         cfg.gpu_batch_size = cfg.training.batch_size // self.accelerator.num_processes
         OmegaConf.set_struct(cfg, True)
 
+        ### Set up wandb logger
         self.accelerator.wait_for_everyone()
         if self.accelerator.is_main_process:
-            wandb_enabled = cfg.get('wandb_enabled', True)
+            use_wandb = cfg.get('use_wandb', True)
             
-            if wandb_enabled:
+            if use_wandb:
                 wandb_run_id = None
                 if os.path.exists("hydra.yaml"):
                     existing_cfg = OmegaConf.load("hydra.yaml")
@@ -91,25 +93,17 @@ class Trainer:
                     log.info(f"Resuming Wandb run {wandb_run_id}")
 
                 wandb_dict = OmegaConf.to_container(cfg, resolve=True)
-                if self.cfg.debug:
-                    log.info("WARNING: Running in debug mode...")
-                    self.wandb_run = wandb.init(
-                        project="dino_wm_debug",
-                        config=wandb_dict,
-                        id=wandb_run_id,
-                        resume="allow",
-                    )
-                else:
-                    self.wandb_run = wandb.init(
-                        project="dino_wm",
-                        config=wandb_dict,
-                        id=wandb_run_id,
-                        resume="allow",
-                    )
+                self.wandb_run = wandb.init(
+                    project=cfg.wandb_project,
+                    entity=cfg.wandb_entity,
+                    config=wandb_dict,
+                    id=wandb_run_id,
+                    resume="allow",
+                )
                 OmegaConf.set_struct(cfg, False)
                 cfg.wandb_run_id = self.wandb_run.id
                 OmegaConf.set_struct(cfg, True)
-                wandb.run.name = "{}".format(model_name)
+                wandb.run.name = "{}".format(model_name) # setup wandb name
                 with open(os.path.join(os.getcwd(), "hydra.yaml"), "w") as f:
                     f.write(OmegaConf.to_yaml(cfg, resolve=True))
             else:
