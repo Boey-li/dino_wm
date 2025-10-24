@@ -1,7 +1,6 @@
 import os
 import time
 import hydra
-import torch
 import logging
 import warnings
 import numpy as np
@@ -10,8 +9,12 @@ from pathlib import Path
 from omegaconf import OmegaConf, open_dict
 from einops import rearrange
 from collections import OrderedDict
-from torchvision import utils
 
+import torch
+from torchvision import utils
+from torch.utils.data import DataLoader
+
+from metrics.image_metrics import eval_images
 from utils import cfg_to_dict, seed, load_model, slice_trajdict_with_t, sample_tensors
 
 warnings.filterwarnings("ignore")
@@ -41,9 +44,12 @@ class ModelEvaluator:
         )
         log.info("Starting model evaluation...")
         
+        # Initialize local metrics storage
+        self.eval_metrics = OrderedDict()
+        
         ### Load model
         self.model, self.model_cfg = self._load_model()
-        self.model.eval()
+        self.num_reconstruct_samples = self.model_cfg.training.num_reconstruct_samples
 
         ### Load dataset
         seed(cfg.seed)
@@ -54,8 +60,16 @@ class ModelEvaluator:
             frameskip=self.model_cfg.frameskip,
         )
         
-    
-    
+        self.dataloader = DataLoader(
+            self.dataset,
+            batch_size=self.model_cfg.gpu_batch_size,
+            shuffle=False,
+            num_workers=self.cfg.evaluation.num_workers,
+            collate_fn=None,
+        )
+        log.info(f"dataloader batch size: {self.model_cfg.gpu_batch_size}")
+        
+
     def _load_model(self):
         model_path = self.cfg.model_path
         with open(os.path.join(model_path, "hydra.yaml"), "r") as f:
@@ -68,11 +82,99 @@ class ModelEvaluator:
         return model, model_cfg
     
     
-    def run(self):
+    def eval(self):
+        # open loop rollout with random horizons
+        self.model.eval()
         rollout_logs = self.openloop_rollout(self.traj_dset)
         log.info("Open-loop Rollout Evaluation Results:")
         for k, v in rollout_logs.items():
             log.info(f"{k}: {v:.6f}")
+        
+        # rollout on dataset slices with fixed horizon
+        for i, data in enumerate(tqdm(self.dataloader)):
+            obs, act, state = data
+
+            for k in obs.keys():
+                obs[k] = obs[k].to(self.device)
+            act = act.to(self.device)
+            state = state.to(self.device)
+            
+            self.model.eval()
+            z_out, visual_out, visual_reconstructed, loss, loss_components = self.model(
+                obs, act
+            )
+            
+            loss = self.gather_for_metrics(loss).mean()
+
+            loss_components = self.gather_for_metrics(loss_components)
+            loss_components = {
+                key: value.mean().item() for key, value in loss_components.items()
+            }
+            
+            # Track overall loss
+            self.logs_update({'val_loss': [loss.item()]})
+            
+            if self.model_cfg.has_decoder:
+                # only eval images when plotting due to speed
+                if self.model_cfg.has_predictor:
+                    z_obs_out, z_act_out = self.model.separate_emb(z_out)
+                    z_gt = self.model.encode_obs(obs)
+                    z_tgt = slice_trajdict_with_t(z_gt, start_idx=self.model.num_pred)
+
+                    state_tgt = state[:, -self.model.num_hist :]  # (b, num_hist, dim)
+                    err_logs = self.err_eval(z_obs_out, z_tgt)
+
+                    err_logs = self.gather_for_metrics(err_logs)
+                    err_logs = {
+                        key: value.mean().item() for key, value in err_logs.items()
+                    }
+                    err_logs = {f"val_{k}": [v] for k, v in err_logs.items()}
+
+                    self.logs_update(err_logs)
+
+                if visual_out is not None:
+                    for t in range(
+                        self.model_cfg.num_hist, self.model_cfg.num_hist + self.model_cfg.num_pred
+                    ):
+                        img_pred_scores = eval_images(
+                            visual_out[:, t - self.model_cfg.num_pred], obs["visual"][:, t]
+                        )
+                        img_pred_scores = self.gather_for_metrics(
+                            img_pred_scores
+                        )
+                        img_pred_scores = {
+                            f"val_img_{k}_pred": [v.mean().item()]
+                            for k, v in img_pred_scores.items()
+                        }
+                        self.logs_update(img_pred_scores)
+
+                if visual_reconstructed is not None:
+                    for t in range(obs["visual"].shape[1]):
+                        img_reconstruction_scores = eval_images(
+                            visual_reconstructed[:, t], obs["visual"][:, t]
+                        )
+                        img_reconstruction_scores = self.gather_for_metrics(
+                            img_reconstruction_scores
+                        )
+                        img_reconstruction_scores = {
+                            f"val_img_{k}_reconstructed": [v.mean().item()]
+                            for k, v in img_reconstruction_scores.items()
+                        }
+                        self.logs_update(img_reconstruction_scores)
+
+                self.plot_samples(
+                    obs["visual"],
+                    visual_out,
+                    visual_reconstructed,
+                    batch=i,
+                    num_samples=self.num_reconstruct_samples,
+                )
+                
+            loss_components = {f"val_{k}": [v] for k, v in loss_components.items()}
+            self.logs_update(loss_components)
+        
+        # Print final evaluation summary
+        self.print_final_summary()
     
     
     def openloop_rollout(self, dset, num_rollout=10, 
@@ -170,12 +272,38 @@ class ModelEvaluator:
             logs[k] = loss
         return logs
     
+    def err_eval(self, z_out, z_tgt, state_tgt=None):
+        """
+        z_pred: (b, n_hist, n_patches, emb_dim), doesn't include action dims
+        z_tgt: (b, n_hist, n_patches, emb_dim), doesn't include action dims
+        state:  (b, n_hist, dim)
+        """
+        logs = {}
+        slices = {
+            "full": (None, None),
+            "pred": (-self.model.num_pred, None),
+            "next1": (-self.model.num_pred, -self.model.num_pred + 1),
+        }
+        for name, (start_idx, end_idx) in slices.items():
+            z_out_slice = slice_trajdict_with_t(
+                z_out, start_idx=start_idx, end_idx=end_idx
+            )
+            z_tgt_slice = slice_trajdict_with_t(
+                z_tgt, start_idx=start_idx, end_idx=end_idx
+            )
+            z_err = self.err_eval_single(z_out_slice, z_tgt_slice)
+
+            logs.update({f"z_{k}_err_{name}": v for k, v in z_err.items()})
+
+        return logs
+    
     
     def plot_samples(
         self,
         gt_imgs,
         pred_imgs,
         reconstructed_gt_imgs,
+        batch,
         num_samples=2,
     ):
         """
@@ -216,10 +344,12 @@ class ModelEvaluator:
         )
         imgs = torch.cat([gt_imgs, pred_imgs, reconstructed_gt_imgs], dim=0)
 
+        save_plot_dir = os.path.join(self.save_dir, "eval")
+        os.makedirs(save_plot_dir, exist_ok=True)
         self.plot_imgs(
             imgs,
             num_columns=num_samples * num_frames,
-            img_name=f"{self.save_dir}/samples.png",
+            img_name=f"{save_plot_dir}/eval_b{batch}.png",
         )
     
     def plot_imgs(self, imgs, num_columns, img_name):
@@ -231,6 +361,72 @@ class ModelEvaluator:
             value_range=(-1, 1),
         )
     
+    def logs_update(self, logs):
+        """Update local metrics storage"""
+        for key, value in logs.items():
+            if key not in self.eval_metrics:
+                self.eval_metrics[key] = []
+            if isinstance(value, list):
+                self.eval_metrics[key].extend(value)
+            else:
+                self.eval_metrics[key].append(value)
+    
+    def gather_for_metrics(self, tensor_dict):
+        """Local replacement for accelerator.gather_for_metrics"""
+        if isinstance(tensor_dict, dict):
+            return {k: v.detach().cpu() for k, v in tensor_dict.items()}
+        else:
+            return tensor_dict.detach().cpu()
+    
+    def print_final_summary(self):
+        """Print final evaluation summary with loss and loss components"""
+        log.info("=" * 60)
+        log.info("FINAL EVALUATION SUMMARY")
+        log.info("=" * 60)
+        
+        # Print overall loss
+        if 'val_loss' in self.eval_metrics and self.eval_metrics['val_loss']:
+            loss_values = self.eval_metrics['val_loss']
+            mean_loss = np.mean(loss_values)
+            std_loss = np.std(loss_values)
+            log.info(f"Overall Loss: {mean_loss:.6f} ± {std_loss:.6f}")
+            log.info(f"Loss Count: {len(loss_values)} batches")
+        
+        # Print loss components
+        loss_component_keys = [k for k in self.eval_metrics.keys() if k.startswith('val_') and not k.startswith('val_img_') and not k.startswith('val_z_')]
+        if loss_component_keys:
+            log.info("\nLoss Components:")
+            for key in loss_component_keys:
+                if self.eval_metrics[key]:
+                    values = self.eval_metrics[key]
+                    mean_val = np.mean(values)
+                    std_val = np.std(values)
+                    log.info(f"  {key}: {mean_val:.6f} ± {std_val:.6f}")
+        
+        # Print latent space metrics
+        latent_keys = [k for k in self.eval_metrics.keys() if k.startswith('val_z_')]
+        if latent_keys:
+            log.info("\nLatent Space Metrics:")
+            for key in latent_keys:
+                if self.eval_metrics[key]:
+                    values = self.eval_metrics[key]
+                    mean_val = np.mean(values)
+                    std_val = np.std(values)
+                    log.info(f"  {key}: {mean_val:.6f} ± {std_val:.6f}")
+        
+        # Print image quality metrics
+        image_keys = [k for k in self.eval_metrics.keys() if k.startswith('val_img_')]
+        if image_keys:
+            log.info("\nImage Quality Metrics:")
+            for key in image_keys:
+                if self.eval_metrics[key]:
+                    values = self.eval_metrics[key]
+                    mean_val = np.mean(values)
+                    std_val = np.std(values)
+                    log.info(f"  {key}: {mean_val:.6f} ± {std_val:.6f}")
+        
+        log.info("=" * 60)
+    
     
 ################################
 # Main 
@@ -238,7 +434,7 @@ class ModelEvaluator:
 @hydra.main(config_path="conf", config_name="eval")
 def main(cfg: OmegaConf):    
     evaluator = ModelEvaluator(cfg)
-    evaluator.run()
+    evaluator.eval()
 
 
 if __name__ == "__main__":

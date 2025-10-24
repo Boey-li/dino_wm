@@ -5,3 +5,4 @@ plan_outputs
 data/**
 sbatch_logs/**
 results/**
+.vscode
