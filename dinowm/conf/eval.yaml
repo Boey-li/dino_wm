@@ -1,0 +1,9 @@
+defaults:
+  - _self_
+  - env: robomimic
+
+ckpt_base_path: ./ # put absolute path here.
+
+hydra:
+  run:
+    dir: eval_outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}

@@ -1,0 +1,64 @@
+defaults:
+  - _self_
+  - env: robomimic
+  - encoder: dino 
+  - action_encoder: proprio
+  - proprio_encoder: proprio
+  - decoder: vqvae
+  - predictor: vit
+
+# base path to load model checkpoints from. Checkpoints will be loaded from ${ckpt_base_path}/outputs
+ckpt_base_path: ./ # put absolute path here
+
+hydra:
+  run:
+    dir: eval_outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+# Model to evaluate
+model_name: null  # specify the model name (folder name in outputs)
+model_epoch: latest  # specify epoch: 'latest' or specific epoch number
+
+# Evaluation configuration
+evaluation:
+  seed: 42
+  batch_size: 32
+  num_workers: 4
+  num_plot_batches: 3  # number of batches to generate plots for
+  num_plot_samples: 4   # number of samples per batch to plot
+  num_rollouts: 20      # number of rollout evaluations to perform
+
+# Data configuration (inherited from model config, but can be overridden)
+img_size: 64
+concat_dim: 1
+normalize_action: False
+
+num_hist: 3
+num_pred: 1
+frameskip: 5
+
+num_exp_trajs: 50
+num_exp_val_trajs: 5
+
+has_predictor: True
+has_decoder: True
+
+# Model configuration (inherited from training config)
+model:
+  _target_: models.visual_world_model.VWorldModel
+  image_size: ${img_size}
+  num_hist: ${num_hist}
+  num_pred: ${num_pred}
+  train_encoder: False
+  train_predictor: True
+  train_decoder: True
+
+# Action encoder configuration
+action_emb_dim: 10
+num_action_repeat: 1
+
+# Proprio encoder configuration
+proprio_emb_dim: 10 
+num_proprio_repeat: 1
+
+# Debug mode
+debug: False
