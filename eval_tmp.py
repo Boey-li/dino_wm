@@ -13,9 +13,9 @@ from omegaconf import OmegaConf, open_dict
 from einops import rearrange
 from collections import OrderedDict
 
-from metrics.image_metrics import eval_images
-from utils import slice_trajdict_with_t, cfg_to_dict, seed, sample_tensors
-from preprocessor import Preprocessor
+from dinowm.metrics.image_metrics import eval_images
+from dinowm.utils import slice_trajdict_with_t, cfg_to_dict, seed, sample_tensors
+from dinowm.preprocessor import Preprocessor
 
 warnings.filterwarnings("ignore")
 log = logging.getLogger(__name__)

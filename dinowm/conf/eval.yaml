@@ -1,9 +1,19 @@
 defaults:
   - _self_
-  - env: robomimic
+  - evaluation: robomimic
 
-ckpt_base_path: ./ # put absolute path here.
+ckpt_base_path: ./results # put absolute path here.
 
 hydra:
   run:
-    dir: eval_outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    dir: ${ckpt_base_path}/eval_outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+# Model
+model_path: /coc/flash7/bli678/projects/egowm/external/dino_wm/results/outputs/2025-10-18/15-25-13
+model_epoch: latest
+
+# Data configuration (inherited from model config, but can be overridden)
+img_size: 64
+
+# Evaluation
+seed: 0

@@ -92,13 +92,17 @@ class RoboMimicDataset(TrajDataset):
         
     def _load_data(self):
         # Load the RoboMimic h5py files
-        dataset_path, _, shape_meta = get_dataset_path_and_meta_info(
-            env_id=self.task_name,
-            shaped=self.shape_rewards,
-            image_size=self.img_size,
-            done_mode=self.done_mode,
-            datadir=str(self.data_path),
-        )
+        if str(self.data_path).endswith('.hdf5'):
+            dataset_path = str(self.data_path)
+            shape_meta = create_shape_meta(self.img_size, include_state=True)
+        else:
+            dataset_path, _, shape_meta = get_dataset_path_and_meta_info(
+                env_id=self.task_name,
+                shaped=self.shape_rewards,
+                image_size=self.img_size,
+                done_mode=self.done_mode,
+                datadir=str(self.data_path),
+            )
         cprint(f"...Loading RoboMimic dataset from {dataset_path}...", "green")
         
         f = h5py.File(dataset_path, "r")
@@ -112,10 +116,13 @@ class RoboMimicDataset(TrajDataset):
 
         # Set state_dim and action_dim
         first_demo = f["data"][demos[0]]
-        state_dim = 0
-        for key in state_keys:
-            state_dim += np.prod(first_demo["obs"][key].shape[1:])
         action_dim = first_demo["actions"].shape[1]
+        if 'state' in first_demo['obs'].keys():
+            state_dim = first_demo['obs']['state'].shape[1]
+        else:
+            state_dim = 0
+            for key in state_keys:
+                state_dim += np.prod(first_demo["obs"][key].shape[1:])
         self.state_dim = state_dim
         self.action_dim = action_dim
         cprint(f"State dim: {state_dim}, Action dim: {action_dim}", "yellow")
@@ -256,9 +263,45 @@ def load_robomimic_slice_train_val(
     return datasets, traj_dset
 
 
-
+def load_robomimic_slice_test(
+    transform,
+    n_rollout=50,
+    data_path='/data/robomimic_datasets',
+    task_name='square',
+    normalize_action=True,
+    done_mode=1,
+    shape_rewards=True,
+    img_size=64,
+    max_traj_length=200,
+    num_hist=0,
+    num_pred=0,
+    frameskip=0,
+):
+    dset = RoboMimicDataset(
+        data_path=data_path,
+        task_name=task_name,
+        n_rollout=n_rollout,
+        transform=transform,
+        normalize_action=normalize_action,
+        done_mode=done_mode,
+        shape_rewards=shape_rewards,
+        img_size=img_size,
+        max_traj_length=max_traj_length,
+    )
     
+    num_frames = num_hist + num_pred
+    slices = TrajSlicerDataset(dset, num_frames, frameskip)
+    cprint(f"Test slices: {len(slices)}", "yellow")
+    
+    datasets = slices
+    traj_dset = dset
+    
+    return datasets, traj_dset
 
+
+################################
+# Main Test
+################################    
 @hydra.main(config_path="../conf/env", config_name="robomimic")
 def test_robomimic_dataset(cfg: OmegaConf):
     num_hist = 3

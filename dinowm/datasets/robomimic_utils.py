@@ -124,8 +124,11 @@ def add_traj_to_cache(demo, f, pixel_keys, state_keys, norm_dict=None):
     # Create "state" key
     concat_state = []
     for t in range(len(traj["obs"][pixel_keys[0]])):
-        curr_obs_state_vec = [traj["obs"][obs_key][t] for obs_key in state_keys]
-        curr_obs_state_vec = np.concatenate(curr_obs_state_vec, dtype=np.float32)
+        if 'state' in traj['obs'].keys():
+            curr_obs_state_vec = traj["obs"]['state'][t]
+        else:
+            curr_obs_state_vec = [traj["obs"][obs_key][t] for obs_key in state_keys]
+            curr_obs_state_vec = np.concatenate(curr_obs_state_vec, dtype=np.float32)
         concat_state.append(curr_obs_state_vec)
 
         # Update norm_dict for the states
